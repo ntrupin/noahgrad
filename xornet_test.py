@@ -31,7 +31,7 @@ y = ng.Tensor([
 ])
 
 
-epochs = 10000
+epochs = 20000
 
 pred = model(x)
 print(pred)

@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Sequence, Union
+from typing import Self, Sequence, Union, Type, Optional, Tuple
 
 Array = np.ndarray
 Scalar = Union[float, int]
@@ -26,7 +26,7 @@ class Tensor:
     def __add__(self, other):
         if isinstance(other, Scalar):
             # scalar addition
-            out = Tensor(self.data + other, prev=(self,), op="+", 
+            out = Tensor(self.data + other, prev=(self,), op="+",
                          requires_grad=self.requires_grad)
 
             if self.requires_grad:
