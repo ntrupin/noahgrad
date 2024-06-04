@@ -5,6 +5,8 @@ import noahgrad.nn as nn
 import noahgrad.losses as losses
 import noahgrad.optim as optim
 
+import torch
+
 import mnist
 
 class MLP(nn.Module):
@@ -53,4 +55,4 @@ for e in range(num_epochs):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-    print(f"epoch {e}, loss: {loss.item():.4f}")
+    print(f"epoch {e + 1}, loss: {loss.item():.4f}")
