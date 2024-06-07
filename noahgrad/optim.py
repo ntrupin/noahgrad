@@ -1,9 +1,10 @@
 import numpy as np
+from typing import List
 
 from noahgrad.core import Tensor
 
 class Optimizer:
-    def __init__(self, parameters: list[Tensor], learning_rate: float):
+    def __init__(self, parameters: List[Tensor], learning_rate: float):
         self.parameters = parameters
         self.lr = learning_rate
 
@@ -15,7 +16,7 @@ class Optimizer:
             p.grad = np.zeros(p.shape)
 
 class SGD(Optimizer):
-    def __init__(self, parameters: list[Tensor], learning_rate: float):
+    def __init__(self, parameters: List[Tensor], learning_rate: float):
         super().__init__(parameters, learning_rate)
 
     def step(self):

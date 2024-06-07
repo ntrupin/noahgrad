@@ -1,292 +1,282 @@
 import numpy as np
-from typing import Self, Sequence, Union, Type, Optional, Tuple
+
+from typing import Union, List, Tuple, Self, Optional, Callable, Dict, Any, Set
 
 Array = np.ndarray
-Scalar = Union[float, int]
+Scalar = Union[int, float]
 
 class Tensor:
+    _rng: np.random.Generator = np.random.default_rng()
 
-    def __init__(self, data: Union[Array, list, Sequence], /, dtype = None, prev: tuple = (),
-                 op: str | None = None, requires_grad: bool = False,
-                 label: str | None = None):
-        assert isinstance(data, Union[Array, list, Sequence]), "invalid type for Tensor"
-        super(Tensor, self).__init__()
+    data: Array
+    requires_grad: bool
+    grad: Array
+    _ctx: Optional['Function']
+    _op: Optional[str]
+    _label: Optional[str]
 
-        self.dtype = dtype or np.float32
-        self.data = (
-            np.array(data) if not isinstance(data, Array) else data.astype(dtype=self.dtype))
-        self._prev = prev
-        self._op = op
+    def __init__(self, data: Union[Array, List], /,
+                 ctx: Optional['Function'] = None,
+                 requires_grad: bool = False, dtype = None,
+                 op: Optional[str] = None, label: Optional[str] = None):
+
+        # data
+        dtype = dtype or np.float32
+        self.data = data.astype(dtype) if isinstance(data, Array) \
+                    else np.array(data, dtype=dtype)
+
+        # gradients
         self.requires_grad = requires_grad
+        self.grad = np.zeros_like(self.data)
+        self._ctx = ctx if requires_grad else None
+
+        # debug info
+        self._op = op
         self._label = label
 
-        self.grad = np.zeros_like(self.data, dtype=self.dtype)
-        self.grad_fn = None
+    @classmethod
+    def from_scalar(cls, x: Scalar, **kwargs) -> Self:
+        return cls([x], **kwargs)
 
-    def __add__(self, other):
-        if isinstance(other, Scalar):
-            # scalar addition
-            out = Tensor(self.data + other, prev=(self,), op="+",
-                         requires_grad=self.requires_grad)
+    @classmethod
+    def zeros(cls, n: int, **kwargs) -> Self:
+        return cls(np.zeros(n), **kwargs)
 
-            if self.requires_grad:
-                def _scalar_add_grad():
-                    self.grad += out.grad
-                out.grad_fn = _scalar_add_grad
+    @classmethod
+    def ones(cls, n: int, **kwargs) -> Self:
+        return cls(np.ones(n), **kwargs)
 
-            return out
-
-        other = other if isinstance(other, Tensor) else Tensor(other)
-
-        out = Tensor(self.data + other.data, prev=(self,other), op="+",
-                     requires_grad=self.requires_grad or other.requires_grad)
-
-        if not self.requires_grad and not other.requires_grad:
-            return out
-
-        if self.shape == other.shape:
-            def _add_grad():
-                if self.requires_grad:
-                    self.grad += out.grad
-                if other.requires_grad:
-                    other.grad += out.grad
-            out.grad_fn = _add_grad
-        else:
-            laxis, raxis = Tensor._broadcast_axes(self.shape, other.shape)
-
-            def _bcast_add_grad():
-                if self.requires_grad:
-                    self.grad += np.reshape(
-                        np.sum(out.grad, axis=laxis),
-                        self.shape)
-                if other.requires_grad:
-                    other.grad += np.reshape(
-                        np.sum(out.grad, axis=raxis),
-                        other.shape)
-            out.grad_fn = _bcast_add_grad
-
-        return out
-
-    def __radd__(self, other):
-        return self + other
-
-    def __sub__(self, other):
-        return self + (other * -1)
-
-    def __rsub__(self, other):
-        return (self * -1) + other
-
-    def __mul__(self, other):
-        if isinstance(other, Scalar):
-            out = Tensor(self.data * other, prev=(self,), op="*",
-                         requires_grad=self.requires_grad)
-
-            if self.requires_grad:
-                def _scalar_mul_grad():
-                    self.grad += other * out.grad
-                out.grad_fn = _scalar_mul_grad
-
-            return out
-
-        other = other if isinstance(other, Tensor) else Tensor(other)
-
-        out = Tensor(self.data * other.data, prev=(self,other), op="*",
-                     requires_grad=self.requires_grad or other.requires_grad)
-
-        if not self.requires_grad and not other.requires_grad:
-            return out
-
-        if self.shape == other.shape:
-            def _mul_grad():
-                if self.requires_grad:
-                    self.grad += other.data * out.grad
-                if other.requires_grad:
-                    other.grad += self.data * out.grad
-            out.grad_fn = _mul_grad
-        else:
-            laxis, raxis = Tensor._broadcast_axes(self.shape, other.shape)
-
-            def _bcast_mul_grad():
-                if self.requires_grad:
-                    self.grad += np.reshape(
-                        np.sum(other.data * out.grad, axis=laxis),
-                        self.shape)
-                if other.requires_grad:
-                    other.grad += np.reshape(
-                        np.sum(self.data * out.grad, axis=raxis),
-                        other.shape)
-            out.grad_fn = _bcast_mul_grad
-
-        return out
-
-    def __rmul__(self, other):
-        return self * other
-
-    def __truediv__(self, other):
-        return self * (other ** -1)
-
-    def __rtruediv__(self, other):
-        return (self ** -1) * other
-
-    def __pow__(self, other):
-
-        def _npow(a, b):
-            return 1 / (a ** abs(b)) if b < 0 else a ** b
-
-        out = Tensor(_npow(self.data, other), prev=(self,), op="pow",
-                     requires_grad=self.requires_grad)
-
-        if self.requires_grad:
-            def _pow_grad():
-                self.grad += other * _npow(self.data, other - 1) * out.grad
-            out.grad_fn = _pow_grad
-
-        return out
-
-    def __matmul__(self, other):
-        other = other if isinstance(other, Tensor) else Tensor(other)
-
-        out = Tensor(self.data @ other.data, prev=(self,other), op="@",
-                     requires_grad=self.requires_grad or other.requires_grad,
-                     label="MatmulOUT")
-
-        if not self.requires_grad and not other.requires_grad:
-            return out
-
-        l_expand = (0,) if self.ndim == 1 else ()
-        r_expand = (-1,) if other.ndim == 1 else ()
-        expand = l_expand + r_expand
-
-        laxis, raxis = Tensor._broadcast_axes(self.shape[:-2], other.shape[:-2])
-
-        def _matmul_grad():
-            if self.requires_grad:
-                self.grad += np.reshape(np.sum(
-                    np.expand_dims(out.grad, axis=expand) @
-                    np.expand_dims(other.data, axis=r_expand).swapaxes(-1, -2),
-                    axis=laxis), self.shape)
-            if other.requires_grad:
-                other.grad += np.reshape(np.sum(
-                    np.expand_dims(self.data, axis=l_expand).swapaxes(-1, -2) @
-                    np.expand_dims(out.grad, axis=expand),
-                    axis=raxis), other.shape)
-        out.grad_fn = _matmul_grad
-
-        return out
-
-    def __neg__(self):
-        return self * -1
-
-    def backward(self):
-        topo = []
-        visited = set()
-        def build_topo(v):
-            if v not in visited:
-                visited.add(v)
-                for child in v._prev:
-                    build_topo(child)
-                topo.append(v)
-        build_topo(self)
-
-        self.grad = np.ones_like(self.data, dtype=self.dtype)
-        for v in reversed(topo):
-            if v.grad_fn is not None:
-                v.grad_fn()
-
-    def sum(self, /, axis = None, keepdims: bool = False):
-        out = Tensor([np.sum(self.data, axis=axis, keepdims=keepdims)],
-                     prev=(self,), op="sum", requires_grad=self.requires_grad)
-
-        if self.requires_grad:
-            expand = axis if axis and not keepdims else None
-
-            def _sum_grad():
-                if expand:
-                    self.grad += np.ones_like(self.grad) * np.expand_dims(out.grad, axis=expand)
-                else:
-                    self.grad += np.ones_like(self.grad) * out.grad
-            out.grad_fn = _sum_grad
-
-        return out
-
-    def exp(self):
-        out = Tensor(np.exp(self.data), prev=(self,), op="exp",
-                     requires_grad=self.requires_grad)
-
-        if self.requires_grad:
-            def _exp_grad():
-                self.grad += out.data * out.grad
-            out.grad_fn = _exp_grad
-
-        return out
-
-    def mean(self, /, axis = None, keepdims: bool = False):
-        out = self.sum(axis=axis, keepdims=keepdims)
-        return out * (np.prod(out.shape) / np.prod(self.shape))
-
-    def clip(self, min: float = 1e-7, max: float = 1 - 1e-7):
-        self.data = np.clip(self.data, min, max)
-        return self
-
-    def log(self):
-        out = Tensor(np.log(self.data), prev=(self,), op="log",
-                     requires_grad=self.requires_grad)
-
-        if self.requires_grad:
-            def _log_grad():
-                self.grad += (out.grad / self.data)
-            out.grad_fn = _log_grad
-
-        return out
-
-    def softmax(self, /, dim: int = 0):
-        return self.exp() / self.exp().sum(axis=dim)
-
-    def T(self, axes: Union[tuple[int], list[int], None] = None):
-        out = Tensor(np.transpose(self.data, axes=axes), prev=(self,),
-                     op="T", requires_grad=self.requires_grad)
-
-        if self.requires_grad:
-            def _t_grad():
-                self.grad += np.transpose(out.grad, axes=axes)
-            out.grad_fn = _t_grad
-
-        return out
-
-    @staticmethod
-    def _broadcast_axes(a, b):
-        len_a, len_b = len(a), len(b)
-        max_len = max(len_a, len_b)
-
-        a = (1,) * (max_len - len_a) + a
-        b = (1,) * (max_len - len_b) + b
-
-        laxis = []
-        raxis = []
-
-        for i in range(max_len):
-            if a[i] != b[i]:
-                if a[i] == 1: laxis.append(i)
-                if b[i] == 1: raxis.append(i)
-
-        return tuple(laxis), tuple(raxis)
+    @classmethod
+    def random(cls, size: Optional[Union[Tuple[int, ...], int]] = None, /,
+               dtype = np.float32, **kwargs):
+        rand = Tensor._rng.random(size, dtype=dtype)
+        if isinstance(size, Optional[int]):
+            return cls.from_scalar(rand, **kwargs)
+        return cls(rand, **kwargs)
 
     @property
-    def shape(self) -> tuple:
+    def shape(self) -> Tuple[int, ...]:
         return self.data.shape
-
-    @property
-    def size(self) -> int:
-        return self.data.size
 
     @property
     def ndim(self) -> int:
         return self.data.ndim
 
-    def item(self):
-        if self.size != 1:
-            raise RuntimeError("invalid tensor for item")
-        return self.data.sum()
+    @property
+    def dtype(self) -> np.dtype:
+        return self.data.dtype
 
-    def __repr__(self):
+    @property
+    def size(self) -> int:
+        return self.data.size
+
+    def __add__(self, other: Union[Self, Array, Scalar]) -> Self:
+        return Add.apply(self, Tensor._ensure_tensor(other))
+
+    def __radd__(self, other: Union[Self, Array, Scalar]) -> Self:
+        return self + other
+
+    def __sub__(self, other: Union[Self, Array, Scalar]) -> Self:
+        return Sub.apply(self, Tensor._ensure_tensor(other))
+
+    def __rsub__(self, other: Union[Self, Array, Scalar]) -> Self:
+        return -self + other
+
+    def __mul__(self, other: Union[Self, Array, Scalar]) -> Self:
+        return Mul.apply(self, Tensor._ensure_tensor(other))
+
+    def __rmul__(self, other: Union[Self, Array, Scalar]) -> Self:
+        return self * other
+
+    def __truediv__(self, other: Union[Self, Array, Scalar]) -> Self:
+        return self * (other ** -1)
+
+    def __rtruediv__(self, other: Union[Self, Array, Scalar]) -> Self:
+        return (self ** -1) * other
+
+    def __neg__(self) -> Self:
+        return -1 * self
+
+    def __pow__(self, other: Scalar) -> Self: 
+        return Pow.apply(self, Tensor._ensure_tensor(other))
+
+    def __matmul__(self, other: Union[Self, Array, Scalar]) -> Self:
+        return MatMul.apply(self, Tensor._ensure_tensor(other))
+
+    def T(self, axes: Optional[Union[Tuple[int, ...], List[int]]] = None) -> Self:
+        return Transpose.apply(self, axes=axes)
+
+    def exp(self) -> Self:
+        return Exp.apply(self)
+
+    def log(self) -> Self:
+        return Log.apply(self)
+
+    def sum(self, /, **kwargs) -> Self:
+        return Sum.apply(self, **kwargs)
+
+    def mean(self, /, **kwargs) -> Self:
+        out = self.sum(**kwargs)
+        return out * (np.prod(out.shape) / np.prod(self.shape))
+
+    @classmethod
+    def _ensure_tensor(cls, x: Union[Self, Array, Scalar]) -> Self:
+        if isinstance(x, Array): return cls(x, op="coerce")
+        elif isinstance(x, Scalar): return cls.from_scalar(x, op="coerce")
+        else: return x
+
+    def item(self) -> Scalar:
+        return np.sum(self.data)
+
+    def _undo_broadcast(self, tensor: Self, grad: Array) -> Array:
+        # tinytorch
+
+        data = tensor.data
+        print(data, grad)
+
+        while len(data.shape) != len(grad.shape):
+            grad = grad.sum(axis=0, keepdims=(len(grad.shape) == 1))
+
+        for idx, (s1, s2) in enumerate(zip(data.shape, grad.shape)):
+            if s1 < s2:
+                grad = grad.sum(axis=idx, keepdims=True)
+
+        return grad
+
+    def backward(self):
+        if self._ctx is None:
+            return
+
+        # thanks tinytorch
+        def _toposort(node: Tensor, visited: Set[Tensor],
+                      topo: List[Tensor]) -> List[Tensor]:
+            if node in visited:
+                return topo
+            visited.add(node)
+            if node._ctx is None:
+                topo.append(node)
+                return topo
+            for child in node._ctx.args:
+                _toposort(child, visited, topo)
+            topo.append(node)
+            return topo
+
+        nodes = reversed(_toposort(self, set(), []))
+        #self.grad = np.ones_like(self.data, dtype=self.dtype)
+        for node in nodes:
+            if node._ctx is None:
+                continue
+            grads = node._ctx.backward(node)
+            if len(node._ctx.args) == 1:
+                grads = [grads]
+
+            for tensor, grad in zip(node._ctx.args, grads):
+                if grad is None:
+                    continue
+                grad = self._undo_broadcast(tensor, grad)
+                if tensor.grad is None:
+                    tensor.grad = np.zeros_like(self.data, dtype=np.float32)
+                tensor.grad += grad
+
+    def __repr__(self) -> str:
         return f"Tensor({self.data}, requires_grad={self.requires_grad})"
+
+class Function:
+    tensors_need_grad: List[bool]
+    requires_grad: bool
+    args: Tuple[Tensor, ...]
+    kwargs: Dict[str, Any]
+
+    def __init__(self, *tensors: Tensor, **kwargs):
+        self.tensors_need_grad = [t.requires_grad for t in tensors]
+        self.requires_grad = any(self.tensors_need_grad)
+        self.args = tuple(tensors) if self.requires_grad else ()
+
+        self.kwargs = kwargs
+
+    def forward(self, *args, **kwargs) -> Tensor:
+        raise NotImplementedError(f"forward not implemented on {type(self)}")
+
+    def backward(self, *args, **kwargs) -> Any:
+        raise NotImplementedError(f"backward not implemented on {type(self)}")
+
+    @classmethod
+    def apply(cls, *args, **kwargs) -> Tensor:
+        ctx = cls(*args, **kwargs)
+        out = ctx.forward(*args)
+        if ctx.requires_grad:
+            out.requires_grad = True
+            out._ctx = ctx
+        return out
+
+class Add(Function):
+    def forward(self, x: Tensor, y: Tensor) -> Tensor:
+        return Tensor(x.data + y.data, op="add")
+
+    def backward(self, out: Tensor) -> Tuple[Array, Array]:
+        return out.grad, out.grad
+
+class Sub(Function):
+    def forward(self, x: Tensor, y: Tensor) -> Tensor:
+        return Tensor(x.data - y.data, op="sub")
+
+    def backward(self, out: Tensor) -> Tuple[Array, Array]:
+        return out.grad, -out.grad
+
+class Mul(Function):
+    def forward(self, x: Tensor, y: Tensor) -> Tensor:
+        return Tensor(x.data * y.data, op="mul")
+
+    def backward(self, out: Tensor) -> Tuple[Array, Array]:
+        x, y = self.args
+        return y.data * out.grad, x.data * out.grad
+
+class Pow(Function):
+    def forward(self, x: Tensor, y: Tensor) -> Tensor:
+        return Tensor(x.data ** y.item(), op="pow")
+
+    def backward(self, out: Tensor) -> Array:
+        x, y = self.args
+        return y.data * x.data ** (y.data - 1) * out.grad
+
+class MatMul(Function):
+    def forward(self, x: Tensor, y: Tensor) -> Tensor:
+        return Tensor(x.data @ y.data, op="matmul")
+
+    def backward(self, out: Tensor) -> Tuple[Array, Array]:
+        x, y = self.args
+        return out.grad @ y.T().data, x.T().data @ out.grad
+
+class Transpose(Function):
+    def forward(self, x: Tensor) -> Tensor:
+        return Tensor(np.transpose(x.data, axes=self.kwargs["axes"]), 
+                      op="transpose")
+
+    def backward(self, out: Tensor):
+        x = self.args[0]
+        return np.transpose(out.grad, axes=self.kwargs["axes"])
+
+class Exp(Function):
+    def forward(self, x: Tensor) -> Tensor:
+        return Tensor(np.exp(x.data), op="exp")
+
+    def backward(self, out: Tensor):
+        # d/dL e^x = e^x * L' = L * L'
+        return out.data * out.grad
+
+class Log(Function):
+    def forward(self, x: Tensor) -> Tensor:
+        return Tensor(np.log(x.data), op="log")
+
+    def backward(self, out: Tensor):
+        x = self.args[0]
+        # d/dL log(x) = L' / x
+        return out.grad / x.data
+
+class Sum(Function):
+    def forward(self, x: Tensor) -> Tensor:
+        return Tensor(np.sum(x.data, **self.kwargs, keepdims=True), op="sum")
+
+    def backward(self, out: Tensor):
+        x = self.args[0]
+        return np.broadcast_to(out.grad, x.shape)

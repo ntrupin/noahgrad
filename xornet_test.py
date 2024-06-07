@@ -1,29 +1,32 @@
-import noahgrad as ng
+import noahgrad.core as core
+import noahgrad.nn as nn
+import noahgrad.optim as optim
+import noahgrad.losses as losses
 
-class XorNet(ng.Module):
+class XorNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.l1 = ng.Linear(2, 10)
-        self.l2 = ng.Linear(10, 1)
+        self.l1 = nn.Linear(2, 10)
+        self.l2 = nn.Linear(10, 1)
 
     def forward(self, x):
-        x = ng.sigmoid(self.l1(x))
-        x = ng.sigmoid(self.l2(x))
+        x = nn.sigmoid(self.l1(x))
+        x = nn.sigmoid(self.l2(x))
         return x
 
 
 lr = 1e-1
 
 model = XorNet()
-optimizer = ng.SGD(model.parameters(), learning_rate=lr)
+optimizer = optim.SGD(model.parameters(), learning_rate=lr)
 
-x = ng.Tensor([
+x = core.Tensor([
     [0, 0],
     [1, 0],
     [0, 1],
     [1, 1],
 ])
-y = ng.Tensor([
+y = core.Tensor([
     [0],
     [1],
     [1],
@@ -38,7 +41,7 @@ print(pred)
 model.train()
 for epoch in range(epochs):
     pred = model(x)
-    loss = ng.bce_loss(pred, y)
+    loss = losses.bce_loss(pred, y)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
