@@ -7,11 +7,11 @@ inspirations / references: [micrograd](https://github.com/karpathy/micrograd), [
 **features**
 - tensors
 - feed-forward mechanisms
-- autograd / backpropagation
+- autodiff / backpropagation
 - loss functions
 - optimizers
 - layer modules
 
 **todo**
-- abstract out functions into classes
+- abstract functions out into classes
 - gpu support (via jax? mlx feels like cheating)
