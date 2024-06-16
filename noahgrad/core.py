@@ -1,3 +1,4 @@
+import copy
 from typing import Any, List, Optional, Self, Set, Tuple, Union
 import numpy as np
 
@@ -33,7 +34,7 @@ class Tensor:
 
     @classmethod
     def random(cls, shape: Tuple[int, ...], **kwargs) -> Self:
-        data = Tensor._rng.random(shape)
+        data = Tensor._rng.normal(0, 1, shape)
         return Tensor(data, **kwargs)
 
     @classmethod
@@ -76,9 +77,12 @@ class Tensor:
     def __rsub__(self, y): return -self + y
 
     def __mul__(self, y): return Mul.apply(self, Tensor._ensure_tensor(y))
-    def __rmul__(self, y): return self * y
+    def __rmul__(self, y): return self * y 
 
-    def __truediv__(self, y): return self * (y ** -1)
+    def __truediv__(self, y): 
+        if isinstance(y, np.integer):
+            y = float(y)
+        return self * (y ** -1)
     def __rtruediv__(self, y): return (self ** -1) * y
 
     def __pow__(self, y): return Pow.apply(self, Tensor._ensure_tensor(y))
@@ -88,6 +92,9 @@ class Tensor:
 
     def __neg__(self): return -1 * self
 
+    def __getitem__(self, args):
+        return Slice.apply(self, args=args)
+
     def T(self, axes: Optional[Tuple[int, ...]] = None):
         return Transpose.apply(self, axes=axes)
 
@@ -95,17 +102,28 @@ class Tensor:
 
     def log(self): return Log.apply(self)
 
-    def sum(self, axis: Optional[Tuple[int, ...]] = None):
-        return Sum.apply(self, axis=axis)
+    def sum(self, axis: Optional[Union[Tuple[int, ...], int]] = None,
+            keepdims: bool = False):
+        return Sum.apply(self, axis=axis, keepdims=keepdims)
 
-    def mean(self, axis: Optional[Tuple[int, ...]] = None):
+    def mean(self, axis: Optional[Union[Tuple[int, ...], int]] = None):
         out = self.sum(axis=axis)
         return out * (np.prod(out.shape) / np.prod(self.shape))
 
+    def max(self, axis: Optional[Union[Tuple[int, ...], int]] = None,
+            keepdims: bool = False):
+        return Max.apply(self, axis=axis, keepdims=keepdims)
+
+    def clip(self, min: float = 1e-7, max: float = 1 - 1e-7) -> Self:
+        out = copy.deepcopy(self)
+        out.data = np.clip(out.data, min, max)
+        return out
+
     @staticmethod
     def _unbroadcast(x: Array, y: Array) -> Array:
+
         while len(x.shape) != len(y.shape):
-            y = y.sum(axis=0, keepdims=(len(y.shape) == 1))
+            y = y.sum(axis=0)
 
         for idx, (s1, s2) in enumerate(zip(x.shape, y.shape)):
             if s1 < s2:
@@ -135,6 +153,8 @@ class Tensor:
                 continue
 
             grads = node._ctx.backward(node)
+            #if len(node._ctx.args) == 1:
+            #    grads = [grads]
 
             for arg, grad in zip(node._ctx.args, grads):
                 if grad is None:
@@ -246,11 +266,39 @@ class Log(Function):
 
 class Sum(Function):
     def forward(self, x: Tensor) -> Tensor:
-        return Tensor(np.sum(x.data, axis=self.kwargs["axis"], keepdims=True))
+        return Tensor(np.sum(x.data, axis=self.kwargs["axis"], keepdims=self.kwargs["keepdims"]))
 
     def backward(self, out: Tensor) -> Tuple[Optional[np.ndarray], ...]:
         (x,) = self.args
         return np.broadcast_to(out.grad, x.shape), None
+
+class Max(Function):
+    def forward(self, x: Tensor) -> Tensor:
+        return Tensor(np.max(x.data, axis=self.kwargs["axis"], keepdims=self.kwargs["keepdims"]))
+
+    def backward(self, out: Tensor) -> Tuple[Optional[np.ndarray], ...]:
+        (x,) = self.args
+        grad = np.zeros_like(x.data)
+        if self.kwargs["keepdims"]:
+            mask = (out.data == x.data)
+            grad = np.where(mask, out.grad, 0)
+        else:
+            # mask max axis
+            mask = (x.data == np.broadcast_to(out.data[:, np.newaxis], x.shape))
+            # set grad on mask
+            grad[mask] = out.grad.repeat(np.sum(mask, axis=self.kwargs["axis"]))
+        return grad, None
+
+class Slice(Function):
+    def forward(self, x: Tensor) -> Tensor:
+        return Tensor(x.data[self.kwargs["args"]])
+
+    def backward(self, out: Tensor) -> Tuple[Optional[np.ndarray], ...]:
+        # only apply gradient on sliced elements
+        (x,) = self.args
+        grad = np.zeros_like(x.data)
+        grad[self.kwargs["args"]] = out.grad
+        return grad, None
 
 class ReLU(Function):
     def forward(self, x: Tensor) -> Tensor:
@@ -260,6 +308,9 @@ class ReLU(Function):
         # d/dL max(x, 0) = (1 if x > 0 else 0)
         (x,) = self.args
         return np.where(x.data > 0, 1, 0) * out.grad, None
+
+def relu(x: Tensor) -> Tensor:
+    return ReLU.apply(x)
 
 class Tanh(Function):
     def forward(self, x: Tensor) -> Tensor:
@@ -274,3 +325,14 @@ def tanh(x: Tensor) -> Tensor:
 
 def sigmoid(x: Tensor) -> Tensor:
     return 1 / (1 + (-1 * x).exp())
+
+def softmax(x: Tensor, /, axis: int = 0) -> Tensor:
+    m = x.max(axis=axis, keepdims=True)
+    ex = (x - m).exp()
+    return ex / ex.sum(axis=axis, keepdims=True)
+
+def one_hot(x: Tensor, classes: int) -> Tensor:
+    labels = x.data.astype(int)
+    out = np.zeros((labels.shape[0], classes))
+    out[np.arange(len(labels)), labels] = 1
+    return Tensor(out)

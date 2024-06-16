@@ -11,6 +11,9 @@ class Module:
                 params.append(v)
             elif isinstance(v, Module):
                 params.extend(v.parameters())
+            elif isinstance(v, list):
+                for l in v:
+                    params.extend(l.parameters())
         return list(set(params))
 
     def forward(self, *args, **kwargs) -> Tensor:
