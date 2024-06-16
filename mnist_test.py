@@ -45,7 +45,7 @@ def evaluate(model, X, y):
     return np.mean(np.argmax(model(ng.Tensor(X)).data, axis=1) == y.data)
 
 model = MLP(num_layers, train_images.shape[-1], hidden_dim, num_classes)
-optimizer = optim.Adam(model.parameters(), learning_rate=learning_rate)
+optimizer = optim.SGD(model.parameters(), learning_rate=learning_rate)
 
 model.train()
 for e in range(num_epochs):
